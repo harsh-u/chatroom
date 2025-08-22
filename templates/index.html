@@ -1,0 +1,301 @@
+<!--
+RizzRoom Frontend — Single-file HTML+JS (works with the Flask backend you have)
+Features
+- Login (JWT) + basic register link
+- Animated Gen-Z UI (neon gradient, glass cards, micro-interactions)
+- Real-time chat via Socket.IO
+- Emoji palette + reactions
+- File upload to S3 via presigned URL (<= 5 MB)
+- Message list with auto-scroll
+- Placeholders for future: Broadcast (Go Live) + Now Playing (shared music)
+
+How to use
+1) Serve this file as a Flask template or static page (e.g., put it in templates/index.html and add a route to render it).
+2) Make sure your Flask app runs on the same origin (or enable CORS on API/socket if different).
+3) Update API_BASE and SOCKET_URL below only if your backend is on a different host/port.
+
+Note: For attachments-only, this UI auto-sends a stub text ("Shared a file") to satisfy the backend's non-empty content rule.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RizzRoom</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" integrity="sha384-mv+vb5Fj8uJ0yVwQzv3qg+9M6m3UjX8zWb3uFv62X+2g8mE7b3h2kL7g9m2m0bCw" crossorigin="anonymous"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg:#0b0b10; --card:#12121a; --muted:#9aa0a6; --txt:#e8eaed; --accent1:#9b5cff; --accent2:#00f5d4; --accent3:#ff4d6d;
+      --radius:20px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--txt);
+      background: radial-gradient(1200px 800px at 80% -10%, rgba(155,92,255,.25), transparent 60%),
+                  radial-gradient(1000px 600px at -10% 20%, rgba(0,245,212,.12), transparent 60%),
+                  var(--bg);
+      overflow:hidden;
+    }
+    .container{display:grid; grid-template-columns:280px 1fr 320px; gap:12px; height:100vh; padding:12px}
+    .card{background:rgba(18,18,26,.8); backdrop-filter: blur(12px); border-radius:var(--radius); border:1px solid rgba(255,255,255,.06); box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    .sidebar{padding:14px; display:flex; flex-direction:column}
+    .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:.5px;}
+    .brand .dot{width:10px; height:10px; border-radius:999px; background:linear-gradient(135deg,var(--accent1),var(--accent2)); box-shadow:0 0 14px var(--accent1)}
+    .rooms{margin-top:14px; display:flex; flex-direction:column; gap:8px}
+    .room{padding:10px 12px; border-radius:14px; cursor:pointer; background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)); border:1px solid rgba(255,255,255,.06)}
+    .room.active{outline:2px solid rgba(155,92,255,.6)}
+    .actions{margin-top:auto; display:grid; gap:10px}
+    .btn{padding:10px 12px; border-radius:14px; border:none; cursor:pointer; color:var(--txt); font-weight:600; background:linear-gradient(135deg,var(--accent1),var(--accent2)); box-shadow:0 8px 24px rgba(0,0,0,.3)}
+    .btn.ghost{background:transparent; border:1px solid rgba(255,255,255,.12)}
+
+    .chat{display:grid; grid-template-rows:auto 1fr auto; height:100%;}
+    .chat-header{display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid rgba(255,255,255,.06)}
+    .title{font-weight:800}
+    .now-playing{display:flex; align-items:center; gap:10px; opacity:.8}
+    .np-pill{border:1px dashed rgba(255,255,255,.2); padding:6px 10px; border-radius:999px; font-size:12px}
+
+    .messages{padding:16px; overflow:auto; scroll-behavior:smooth}
+    .msg{display:flex; align-items:flex-start; gap:10px; margin-bottom:14px; animation:pop .2s ease}
+    .avatar{width:36px; height:36px; border-radius:999px; background:linear-gradient(135deg,var(--accent2),var(--accent3))}
+    .bubble{max-width:70%; padding:10px 12px; border-radius:16px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08)}
+    .me .bubble{background:rgba(155,92,255,.15); border-color:rgba(155,92,255,.35)}
+    .meta{font-size:11px; color:var(--muted); margin-top:6px}
+    .reacts{margin-top:6px; display:flex; gap:6px}
+    .react{font-size:14px; padding:2px 6px; border-radius:999px; background:rgba(255,255,255,.08); cursor:pointer}
+    .system{opacity:.8; text-align:center; margin:8px 0; font-size:12px}
+
+    @keyframes pop{from{transform:translateY(6px); opacity:.0} to{transform:none; opacity:1}}
+
+    .composer{display:flex; gap:10px; padding:12px; border-top:1px solid rgba(255,255,255,.06)}
+    .input{flex:1; display:flex; align-items:center; gap:8px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:8px 10px}
+    .input input{flex:1; border:none; background:transparent; color:var(--txt); outline:none}
+    .chip{padding:8px 10px; border-radius:12px; font-size:14px; border:1px solid rgba(255,255,255,.12); cursor:pointer; background:rgba(255,255,255,.04)}
+    .emoji-panel{position:absolute; bottom:70px; left:calc(280px + 16px); background:var(--card); padding:8px; border-radius:12px; border:1px solid rgba(255,255,255,.12); display:none; gap:6px; flex-wrap:wrap; width:280px}
+    .emoji-panel button{background:transparent; border:none; font-size:22px; cursor:pointer}
+
+    .rightbar{padding:14px; display:flex; flex-direction:column}
+    .user-card{display:flex; align-items:center; gap:10px; padding:10px; border:1px solid rgba(255,255,255,.06); border-radius:14px;}
+    .presence{margin-top:12px; font-size:12px; color:var(--muted)}
+
+    /* Auth modal */
+    .auth{position:fixed; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.6);}
+    .auth .box{width:360px; padding:18px; border-radius:20px; background:var(--card); border:1px solid rgba(255,255,255,.1)}
+    .field{display:grid; gap:6px; margin-bottom:10px}
+    .field input{padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:transparent; color:var(--txt)}
+    .hint{font-size:12px; color:var(--muted)}
+
+    @media (max-width: 1024px){
+      .container{grid-template-columns:1fr;}
+      .emoji-panel{left:16px; right:16px; width:auto}
+      .rightbar{display:none}
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <aside class="sidebar card">
+      <div class="brand"><span class="dot"></span> RizzRoom</div>
+      <div class="rooms">
+        <div class="room active"># main</div>
+        <div class="room"># memes</div>
+        <div class="room"># wins</div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="goLive">Go Live (Soon)</button>
+        <button class="btn ghost" id="logoutBtn">Logout</button>
+      </div>
+    </aside>
+
+    <main class="chat card">
+      <div class="chat-header">
+        <div class="title">#main</div>
+        <div class="now-playing">
+          <span class="np-pill">Now Playing • coming soon</span>
+        </div>
+      </div>
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <div class="input"><button id="emojiBtn" class="chip">😊</button><input id="msgInput" placeholder="Drop your rizz…"/></div>
+        <label class="chip" for="fileInput">📎</label>
+        <input id="fileInput" type="file" hidden />
+        <button class="btn" id="sendBtn">Send</button>
+      </div>
+    </main>
+
+    <aside class="rightbar card">
+      <div class="user-card"><div class="avatar"></div><div><div id="meName">anon</div><div class="presence">online</div></div></div>
+      <div style="margin-top:14px;">
+        <div class="hint">Reactions: click a bubble to add 😊 😎 🔥 💀 💖</div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="emoji-panel" id="emojiPanel"></div>
+
+  <div class="auth" id="authModal">
+    <div class="box">
+      <h3 style="margin:0 0 8px 0">Login</h3>
+      <div class="field"><label>Username</label><input id="authUser"/></div>
+      <div class="field"><label>Password</label><input id="authPass" type="password"/></div>
+      <button class="btn" id="authLogin">Login</button>
+      <div class="hint" style="margin-top:8px;">New here? Register via API /register then wait for approval.</div>
+      <div class="hint">Tip: Use an admin-approved test account.</div>
+    </div>
+  </div>
+
+<script>
+// ===== Config =====
+const API_BASE = '';// same origin
+const SOCKET_URL = window.location.origin; // same origin
+const MAX_BYTES = 5 * 1024 * 1024;
+
+// ===== State =====
+let token = localStorage.getItem('rr_token') || null;
+let user = JSON.parse(localStorage.getItem('rr_user') || 'null');
+let socket = null;
+
+// ===== UI Elements =====
+const authModal = document.getElementById('authModal');
+const authUser = document.getElementById('authUser');
+const authPass = document.getElementById('authPass');
+const authLogin = document.getElementById('authLogin');
+const messagesEl = document.getElementById('messages');
+const msgInput = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+const fileInput = document.getElementById('fileInput');
+const emojiBtn = document.getElementById('emojiBtn');
+const emojiPanel = document.getElementById('emojiPanel');
+const meName = document.getElementById('meName');
+const logoutBtn = document.getElementById('logoutBtn');
+
+// ===== Emoji Panel =====
+const EMOJIS = ['😊','😎','🔥','💀','💖','😂','🥳','😭','👍','👀','😏','✨','🤝','💬'];
+emojiPanel.innerHTML = EMOJIS.map(e=>`<button type="button">${e}</button>`).join('');
+emojiPanel.addEventListener('click', e=>{
+  if(e.target.tagName==='BUTTON'){ msgInput.value += e.target.textContent; emojiPanel.style.display='none'; msgInput.focus(); }
+});
+emojiBtn.addEventListener('click', ()=>{
+  emojiPanel.style.display = (emojiPanel.style.display==='flex') ? 'none':'flex';
+});
+
+// ===== Auth =====
+function showAuth(show){ authModal.style.display = show? 'grid':'none'; }
+async function login(u,p){
+  const r = await fetch(`${API_BASE}/login`,{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u, password:p})});
+  if(!r.ok){ const j = await r.json().catch(()=>({msg:'login failed'})); throw new Error(j.msg||'login failed'); }
+  return r.json();
+}
+function setSession(t,u){ token=t; user=u; localStorage.setItem('rr_token',t); localStorage.setItem('rr_user',JSON.stringify(u)); meName.textContent = u.username; }
+function clearSession(){ token=null; user=null; localStorage.removeItem('rr_token'); localStorage.removeItem('rr_user'); }
+
+authLogin.onclick = async ()=>{
+  try{ const res = await login(authUser.value.trim(), authPass.value); setSession(res.access_token, res.user); showAuth(false); connectSocket(); loadMessages(); }catch(e){ alert(e.message); }
+};
+logoutBtn.onclick = ()=>{ clearSession(); if(socket) socket.disconnect(); showAuth(true); };
+
+// ===== Socket =====
+function connectSocket(){
+  socket = io(SOCKET_URL, { transports:['websocket'] });
+  socket.on('connect', ()=>{ socket.emit('join', {username: user?.username || 'anon'}); });
+  socket.on('system', data=> addSystem(data.msg));
+  socket.on('message:new', payload => addMessage(payload));
+  socket.on('message:delete', ({id})=> markDeleted(id));
+  socket.on('reaction:new', d=> addReaction(d.message_id, d.emoji, d.user_id));
+  socket.on('reaction:remove', d=> removeReaction(d.message_id, d.emoji, d.user_id));
+  // Placeholders for future
+  socket.on('broadcast:status', d=> console.log('broadcast', d));
+  socket.on('music:sync', d=> console.log('music sync', d));
+}
+
+// ===== Messages =====
+function bubbleHtml(m){
+  const isMe = user && m.user_id===user.id;
+  const id = `m${m.id}`;
+  return `<div class="msg ${isMe? 'me':''}" id="${id}" data-id="${m.id}">
+    <div class="avatar"></div>
+    <div>
+      <div class="bubble"><div>${escapeHtml(m.content)}</div><div class="reacts" id="r${m.id}"></div><div class="meta">by ${m.user_id}</div></div>
+    </div>
+  </div>`;
+}
+function addMessage(m){ messagesEl.insertAdjacentHTML('beforeend', bubbleHtml(m)); messagesEl.scrollTop = messagesEl.scrollHeight; }
+function addSystem(msg){ messagesEl.insertAdjacentHTML('beforeend', `<div class="system">${escapeHtml(msg)}</div>`); messagesEl.scrollTop = messagesEl.scrollHeight; }
+function markDeleted(id){ const el = document.getElementById(`m${id}`); if(el){ el.querySelector('.bubble').innerHTML = '<i>message deleted</i>'; }}
+
+function addReaction(messageId, emoji, uid){
+  const r = document.getElementById(`r${messageId}`);
+  if(!r) return; const span = document.createElement('span'); span.className='react'; span.textContent=emoji; r.appendChild(span);
+}
+function removeReaction(messageId, emoji, uid){ /* basic demo; could find and remove exact chip */ }
+
+function msgFromForm(){ return (msgInput.value||'').trim(); }
+
+sendBtn.onclick = async ()=>{
+  const text = msgFromForm();
+  const file = fileInput.files[0];
+  if(!text && !file){ return; }
+
+  // Step 1: Create message (must not be empty)
+  const content = text || '📎 Shared a file';
+  const r = await fetch(`${API_BASE}/rooms/main/messages`,{
+    method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},
+    body: JSON.stringify({content})
+  });
+  if(!r.ok){ alert('Failed to send'); return; }
+  const msg = await r.json();
+
+  // Step 2: If file, presign -> upload -> link
+  if(file){
+    if(file.size > MAX_BYTES){ alert('File too large (max 5 MB)'); return; }
+    const pres = await fetch(`${API_BASE}/uploads/presign`,{
+      method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},
+      body: JSON.stringify({ filename: file.name, mime_type: file.type || 'application/octet-stream', size_bytes: file.size })
+    });
+    if(!pres.ok){ alert('Presign failed'); return; }
+    const pre = await pres.json();
+
+    const fd = new FormData();
+    Object.entries(pre.fields).forEach(([k,v])=> fd.append(k,v));
+    fd.append('file', file);
+    const up = await fetch(pre.url, {method:'POST', body: fd});
+    if(!up.ok){ alert('Upload to S3 failed'); return; }
+
+    const link = await fetch(`${API_BASE}/messages/${msg.id}/attachments`,{
+      method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},
+      body: JSON.stringify({ s3_key: pre.s3_key, mime_type: file.type, size_bytes: file.size })
+    });
+    if(!link.ok){ alert('Failed to link attachment'); return; }
+  }
+
+  msgInput.value=''; fileInput.value='';
+};
+
+messagesEl.addEventListener('click', async (e)=>{
+  const msgEl = e.target.closest('.msg'); if(!msgEl) return;
+  const id = msgEl.dataset.id;
+  // Quick reaction picker (cycle through)
+  const pick = EMOJIS[Math.floor(Math.random()*5)];
+  await fetch(`${API_BASE}/messages/${id}/reactions`,{method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`}, body: JSON.stringify({emoji: pick})});
+});
+
+async function loadMessages(){
+  const r = await fetch(`${API_BASE}/rooms/main/messages`,{ headers:{'Authorization':`Bearer ${token}`}});
+  if(!r.ok) return; const arr = await r.json(); messagesEl.innerHTML=''; arr.forEach(m=> addMessage(m));
+}
+
+// ===== Utils =====
+function escapeHtml(s){ return s.replace(/[&<>"]+/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+// ===== Boot =====
+(function init(){
+  if(token && user){ showAuth(false); meName.textContent = user.username; connectSocket(); loadMessages(); }
+  else { showAuth(true); }
+})();
+</script>
+</body>
+</html>
+
