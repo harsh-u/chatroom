@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reaction Picker Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        
+        .test-message {
+            background: white;
+            padding: 15px;
+            margin: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .test-message:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        .reaction-picker {
+            position: fixed;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 8px;
+            padding: 8px;
+            display: none;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 9999;
+            min-width: 200px;
+        }
+        
+        .reaction-picker.show {
+            display: grid;
+            animation: fadeIn 0.2s ease;
+        }
+        
+        .emoji-btn {
+            width: 28px;
+            height: 28px;
+            border: none;
+            background: transparent;
+            font-size: 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+        
+        .emoji-btn:hover {
+            background: #555;
+            transform: scale(1.2);
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+        
+        .status {
+            background: #e8f5e8;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            border-left: 4px solid #4caf50;
+        }
+    </style>
+</head>
+<body>
+    <h1>Reaction Picker Test</h1>
+    
+    <div class="status">
+        <strong>Instructions:</strong> Click on any message below to test the reaction picker. 
+        The picker should appear near your click position.
+    </div>
+    
+    <div class="test-message" data-message-id="1">
+        <strong>User1:</strong> Hello everyone! 👋
+    </div>
+    
+    <div class="test-message" data-message-id="2">
+        <strong>User2:</strong> Hi there! How's it going?
+    </div>
+    
+    <div class="test-message" data-message-id="3">
+        <strong>User3:</strong> Great to see you all here! 🎉
+    </div>
+    
+    <div class="test-message" data-message-id="4">
+        <strong>User1:</strong> This is a test message for reactions
+    </div>
+    
+    <div class="reaction-picker" id="reactionPicker">
+        <!-- Emojis will be inserted here -->
+    </div>
+    
+    <script>
+        const REACTION_EMOJIS = ['😊', '😂', '❤️', '👍', '😮', '😢', '😡', '🔥', '💯', '🎉', '👏', '🤔'];
+        const reactionPicker = document.getElementById('reactionPicker');
+        let currentReactionMessageId = null;
+        
+        // Initialize emoji picker
+        function initEmojiPickers() {
+            reactionPicker.innerHTML = REACTION_EMOJIS.map(emoji =>
+                `<button class="emoji-btn" type="button" data-emoji="${emoji}">${emoji}</button>`
+            ).join('');
+        }
+        
+        // Show reaction picker
+        function showReactionPicker(messageId, event) {
+            currentReactionMessageId = messageId;
+            
+            // Get viewport dimensions
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            
+            // Get picker dimensions
+            const pickerWidth = 200;
+            const pickerHeight = 80;
+            
+            // Calculate position to keep picker within viewport
+            let left = event.clientX;
+            let top = event.clientY - 50;
+            
+            // Adjust horizontal position if picker would go off-screen
+            if (left + pickerWidth > viewportWidth) {
+                left = viewportWidth - pickerWidth - 10;
+            }
+            if (left < 10) {
+                left = 10;
+            }
+            
+            // Adjust vertical position if picker would go off-screen
+            if (top < 10) {
+                top = event.clientY + 20;
+            }
+            if (top + pickerHeight > viewportHeight) {
+                top = viewportHeight - pickerHeight - 10;
+            }
+            
+            reactionPicker.style.left = left + 'px';
+            reactionPicker.style.top = top + 'px';
+            reactionPicker.classList.add('show');
+            
+            console.log('Reaction picker shown at:', { left, top, messageId });
+        }
+        
+        // Hide reaction picker
+        function hideReactionPicker() {
+            reactionPicker.classList.remove('show');
+            currentReactionMessageId = null;
+        }
+        
+        // Add reaction
+        function addReactionToMessage(messageId, emoji) {
+            console.log(`Adding reaction ${emoji} to message ${messageId}`);
+            // In a real app, this would send to the server
+            hideReactionPicker();
+        }
+        
+        // Event listeners
+        document.addEventListener('click', (e) => {
+            // Check if clicked on message
+            const messageEl = e.target.closest('.test-message');
+            if (messageEl) {
+                const messageId = messageEl.dataset.messageId;
+                if (messageId) {
+                    console.log('Message clicked:', messageId);
+                    showReactionPicker(messageId, e);
+                }
+            }
+            
+            // Close picker if clicking outside
+            if (!reactionPicker.contains(e.target)) {
+                hideReactionPicker();
+            }
+        });
+        
+        // Reaction picker click handler
+        reactionPicker.addEventListener('click', (e) => {
+            if (e.target.classList.contains('emoji-btn') && currentReactionMessageId) {
+                const emoji = e.target.dataset.emoji;
+                addReactionToMessage(currentReactionMessageId, emoji);
+            }
+        });
+        
+        // Close on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                hideReactionPicker();
+            }
+        });
+        
+        // Initialize
+        initEmojiPickers();
+        console.log('Reaction picker test initialized');
+    </script>
+</body>
+</html>

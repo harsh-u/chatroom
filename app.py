@@ -25,6 +25,7 @@ from flask_jwt_extended import (
 )
 from werkzeug.exceptions import HTTPException
 import boto3, os, uuid, re, datetime
+from datetime import timedelta
 import MySQLdb
 from MySQLdb.cursors import DictCursor
 from MySQLdb import IntegrityError
@@ -34,6 +35,7 @@ from MySQLdb import IntegrityError
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'supersecret')
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'jwtsecret')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(weeks=1)  # Access token expires in 1 week
 app.config['MYSQL_HOST'] = os.getenv('DB_HOST', 'localhost')
 app.config['MYSQL_USER'] = os.getenv('DB_USER', 'root')
 app.config['MYSQL_PASSWORD'] = os.getenv('DB_PASS', '')
@@ -148,8 +150,13 @@ def login():
     if user['status'] != 'active':
         return jsonify({"msg": "Account not approved yet"}), 403
 
-    token = create_access_token(identity=user['id'])
-    return jsonify({"access_token": token, "user": {"id": user['id'], "username": user['username'], "role": user['role']}})
+    access_token = create_access_token(identity=user['id'])
+    return jsonify({
+        "access_token": access_token, 
+        "user": {"id": user['id'], "username": user['username'], "role": user['role']}
+    })
+
+
 
 # ------------------ Admin Moderation ------------------
 
@@ -262,9 +269,9 @@ def list_messages():
     limit = min(int(request.args.get('limit', 50)), 100)
     c = db()
     if before_id:
-        c.execute("SELECT * FROM messages_view WHERE id < %s ORDER BY id DESC LIMIT %s", (before_id, limit))
+        c.execute("SELECT * FROM messages WHERE id < %s AND deleted_at IS NULL ORDER BY id DESC LIMIT %s", (before_id, limit))
     else:
-        c.execute("SELECT * FROM messages_view ORDER BY id DESC LIMIT %s", (limit,))
+        c.execute("SELECT * FROM messages WHERE deleted_at IS NULL ORDER BY id DESC LIMIT %s", (limit,))
     return jsonify(list(reversed(c.fetchall())))
 
 @app.post('/rooms/main/messages')
@@ -326,11 +333,11 @@ def delete_own_message(message_id):
 
 # ------------------ Socket.IO Events ------------------
 
-@socketio.on('join')
-def sio_join(data):
-    username = data.get('username', 'anon')
-    join_room(ROOM_GLOBAL)
-    emit('system', {"msg": f"{username} joined"}, to=ROOM_GLOBAL)
+# @socketio.on('join')
+# def sio_join(data):
+#     username = data.get('username', 'anon')
+#     join_room(ROOM_GLOBAL)
+#     emit('system', {"msg": f"{username} joined"}, to=ROOM_GLOBAL)
 
 @socketio.on('typing')
 def sio_typing(data):
