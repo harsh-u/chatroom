@@ -137,14 +137,33 @@ Note: For attachments-only, this UI auto-sends a stub text ("Shared a file") to 
   <div class="emoji-panel" id="emojiPanel"></div>
 
   <div class="auth" id="authModal">
-    <div class="box">
-      <h3 style="margin:0 0 8px 0">Login</h3>
-      <div class="field"><label>Username</label><input id="authUser"/></div>
-      <div class="field"><label>Password</label><input id="authPass" type="password"/></div>
-      <button class="btn" id="authLogin">Login</button>
-      <div class="hint" style="margin-top:8px;">New here? Register via API /register then wait for approval.</div>
-      <div class="hint">Tip: Use an admin-approved test account.</div>
-    </div>
+      <div class="box" id="authBox">
+        <h3 id="authTitle" style="margin:0 0 8px 0">Login</h3>
+          <div id="authError" style="color:#ff4d6d; font-size:13px; margin-bottom:8px; display:none;"></div>
+
+
+        <div class="field"><label>Username</label>
+          <input id="authUser" required/>
+        </div>
+
+        <div class="field"><label>Password</label>
+          <input id="authPass" type="password" required/>
+        </div>
+
+        <div class="field" id="emailField" style="display:none;">
+          <label>Email</label>
+          <input id="authEmail" type="email" required/>
+        </div>
+
+        <div class="field" id="displayNameField" style="display:none;">
+          <label>Display Name</label>
+          <input id="authDisplayName"/>
+        </div>
+
+        <button class="btn" id="authSubmit">Login</button>
+        <div class="hint toggleAuth" style="margin-top:8px; cursor:pointer;">New here? Register</div>
+        <div class="hint" id="authTip">Tip: Use an admin-approved test account.</div>
+      </div>
   </div>
 
 <script>
@@ -157,12 +176,13 @@ const MAX_BYTES = 5 * 1024 * 1024;
 let token = localStorage.getItem('rr_token') || null;
 let user = JSON.parse(localStorage.getItem('rr_user') || 'null');
 let socket = null;
+let authMode = 'login';
 
 // ===== UI Elements =====
 const authModal = document.getElementById('authModal');
 const authUser = document.getElementById('authUser');
 const authPass = document.getElementById('authPass');
-const authLogin = document.getElementById('authLogin');
+const authLogin = document.getElementById('authSubmit');
 const messagesEl = document.getElementById('messages');
 const msgInput = document.getElementById('msgInput');
 const sendBtn = document.getElementById('sendBtn');
@@ -185,17 +205,82 @@ emojiBtn.addEventListener('click', ()=>{
 // ===== Auth =====
 function showAuth(show){ authModal.style.display = show? 'grid':'none'; }
 async function login(u,p){
-  const r = await fetch(`${API_BASE}/login`,{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u, password:p})});
+  const r = await fetch(`${API_BASE}/login`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:u, password:p})
+  });
   if(!r.ok){ const j = await r.json().catch(()=>({msg:'login failed'})); throw new Error(j.msg||'login failed'); }
   return r.json();
 }
+
+async function register(u,p,email,dn){
+  const r = await fetch(`${API_BASE}/register`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:u, password:p, email: email, display_name: dn})
+  });
+  if(!r.ok){ const j = await r.json().catch(()=>({msg:'register failed'})); throw new Error(j.msg||'register failed'); }
+  return r.json();
+}
+
 function setSession(t,u){ token=t; user=u; localStorage.setItem('rr_token',t); localStorage.setItem('rr_user',JSON.stringify(u)); meName.textContent = u.username; }
 function clearSession(){ token=null; user=null; localStorage.removeItem('rr_token'); localStorage.removeItem('rr_user'); }
 
 authLogin.onclick = async ()=>{
   try{ const res = await login(authUser.value.trim(), authPass.value); setSession(res.access_token, res.user); showAuth(false); connectSocket(); loadMessages(); }catch(e){ alert(e.message); }
 };
+document.querySelector('.toggleAuth').onclick = ()=>{
+  if(authMode==='login'){
+    authMode='register';
+    document.getElementById('authTitle').textContent='Register';
+    document.getElementById('authSubmit').textContent='Register';
+    document.getElementById('displayNameField').style.display='grid';
+    document.getElementById('emailField').style.display = 'grid';
+    document.querySelector('.toggleAuth').textContent='Already have an account? Login';
+    document.getElementById('authTip').textContent='Fill in details to register a new account.';
+    document.getElementById('authError').style.display = 'none';
+  } else {
+    authMode='login';
+    document.getElementById('authTitle').textContent='Login';
+    document.getElementById('authSubmit').textContent='Login';
+    document.getElementById('displayNameField').style.display='none';
+    document.getElementById('emailField').style.display = 'none';
+    document.querySelector('.toggleAuth').textContent='New here? Register';
+    document.getElementById('authTip').textContent='Tip: Use an admin-approved test account.';
+    document.getElementById('authError').style.display = 'none';
+  }
+};
+
+document.getElementById('authSubmit').onclick = async ()=>{
+  try{
+    const u = authUser.value.trim();
+    const p = authPass.value;
+    if(authMode==='login'){
+      const res = await login(u,p);
+      setSession(res.access_token, res.user);
+      document.getElementById('authError').style.display = 'none'; // hide error
+      showAuth(false);
+      connectSocket();
+      loadMessages();
+    } else {
+      const email = document.getElementById('authEmail').value.trim();
+      const dn = document.getElementById('authDisplayName').value.trim();
+      await register(u,p,email,dn);
+      document.getElementById('authError').style.display = 'none';
+        window.location.href = '/register-success';
+
+<!--      authMode='login';-->
+<!--      document.querySelector('.toggleAuth').click();-->
+    }
+  }catch(e){
+      const errEl = document.getElementById('authError');
+      errEl.textContent = e.message || 'Something went wrong';
+      errEl.style.display = 'block';
+    }
+};
+
+
 logoutBtn.onclick = ()=>{ clearSession(); if(socket) socket.disconnect(); showAuth(true); };
+
 
 // ===== Socket =====
 function connectSocket(){
