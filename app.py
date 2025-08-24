@@ -43,7 +43,7 @@ app.config['MYSQL_DB'] = os.getenv('DB_NAME', 'rizz_room')
 app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
 
 
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
 
 bcrypt = Bcrypt(app)
@@ -333,15 +333,105 @@ def delete_own_message(message_id):
 
 # ------------------ Socket.IO Events ------------------
 
-# @socketio.on('join')
-# def sio_join(data):
-#     username = data.get('username', 'anon')
-#     join_room(ROOM_GLOBAL)
-#     emit('system', {"msg": f"{username} joined"}, to=ROOM_GLOBAL)
+@socketio.on('connect')
+def sio_connect():
+    """Handle client connection"""
+    print(f"Client connected: {request.sid}")
+    emit('connected', {'sid': request.sid})
+
+@socketio.on('disconnect')
+def sio_disconnect():
+    """Handle client disconnection"""
+    print(f"Client disconnected: {request.sid}")
+
+@socketio.on('join')
+def sio_join(data):
+    username = data.get('username', 'anon')
+    join_room(ROOM_GLOBAL)
+    emit('system', {"msg": f"{username} joined"}, to=ROOM_GLOBAL)
 
 @socketio.on('typing')
 def sio_typing(data):
     emit('user:typing', {"user": data.get('user'), "state": data.get('state', True)}, to=ROOM_GLOBAL, include_self=False)
+
+# --- Audio Broadcasting Events ---
+@socketio.on('audio:join')
+def sio_audio_join(data):
+    """User joins audio room"""
+    try:
+        user_id = data.get('user_id')
+        username = data.get('username', 'Anonymous')
+        join_room(ROOM_GLOBAL)
+        print(f"Audio user joined: {username} (ID: {user_id})")
+        emit('audio:user_joined', {
+            "user_id": user_id,
+            "username": username,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        }, to=ROOM_GLOBAL, include_self=False)
+    except Exception as e:
+        print(f"Error in audio:join: {e}")
+        emit('error', {'message': 'Failed to join audio room'})
+
+@socketio.on('audio:leave')
+def sio_audio_leave(data):
+    """User leaves audio room"""
+    user_id = data.get('user_id')
+    username = data.get('username', 'Anonymous')
+    leave_room(ROOM_GLOBAL)
+    emit('audio:user_left', {
+        "user_id": user_id,
+        "username": username,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }, to=ROOM_GLOBAL, include_self=False)
+
+@socketio.on('audio:offer')
+def sio_audio_offer(data):
+    """Handle WebRTC offer from broadcaster"""
+    emit('audio:offer', {
+        "offer": data.get('offer'),
+        "broadcaster_id": data.get('broadcaster_id'),
+        "username": data.get('username')
+    }, to=ROOM_GLOBAL, include_self=False)
+
+@socketio.on('audio:answer')
+def sio_audio_answer(data):
+    """Handle WebRTC answer from listener"""
+    emit('audio:answer', {
+        "answer": data.get('answer'),
+        "listener_id": data.get('listener_id'),
+        "broadcaster_id": data.get('broadcaster_id')
+    }, to=ROOM_GLOBAL, include_self=False)
+
+@socketio.on('audio:ice_candidate')
+def sio_audio_ice_candidate(data):
+    """Handle ICE candidate exchange"""
+    emit('audio:ice_candidate', {
+        "candidate": data.get('candidate'),
+        "from_id": data.get('from_id'),
+        "to_id": data.get('to_id')
+    }, to=ROOM_GLOBAL, include_self=False)
+
+@socketio.on('audio:start_broadcast')
+def sio_audio_start_broadcast(data):
+    """User starts broadcasting audio"""
+    user_id = data.get('user_id')
+    username = data.get('username', 'Anonymous')
+    emit('audio:broadcast_started', {
+        "broadcaster_id": user_id,
+        "username": username,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }, to=ROOM_GLOBAL, include_self=False)
+
+@socketio.on('audio:stop_broadcast')
+def sio_audio_stop_broadcast(data):
+    """User stops broadcasting audio"""
+    user_id = data.get('user_id')
+    username = data.get('username', 'Anonymous')
+    emit('audio:broadcast_stopped', {
+        "broadcaster_id": user_id,
+        "username": username,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }, to=ROOM_GLOBAL, include_self=False)
 
 # --- Future placeholders ---
 @socketio.on('broadcast:start')

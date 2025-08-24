@@ -262,6 +262,39 @@
       color: var(--text-primary);
     }
 
+    .icon-btn.broadcasting {
+      background: var(--danger);
+      color: white;
+      animation: pulse 2s infinite;
+    }
+
+    .icon-btn.broadcasting:hover {
+      background: var(--danger);
+      transform: scale(1.05);
+    }
+
+    .broadcast-status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-tertiary);
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--danger);
+    }
+
+    .status-text {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--danger);
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    }
+
     /* Messages */
     .messages-container {
       flex: 1;
@@ -845,12 +878,18 @@
       <div class="chat-header" id="chatHeader">
         <div class="chat-title">
           <h2>#main</h2>
-<!--          <span class="online-count">5 online</span>-->
+          <span class="online-count" id="onlineCount">0 online</span>
         </div>
-<!--        <div class="chat-actions">-->
-<!--          <button class="icon-btn" title="Search">🔍</button>-->
-<!--          <button class="icon-btn" title="Settings">⚙️</button>-->
-<!--        </div>-->
+        <div class="chat-actions">
+          <button class="icon-btn" id="broadcastBtn" title="Start Broadcasting" data-broadcasting="false">🎤</button>
+          <div class="broadcast-status hidden" id="broadcastStatus">
+            <span class="status-text">🎤 Broadcasting...</span>
+            <button class="btn btn-secondary btn-small" id="stopBroadcastBtn">Stop</button>
+          </div>
+          <button class="icon-btn" id="testAudioBtn" title="Test Audio">🔊</button>
+          <button class="icon-btn" title="Search">🔍</button>
+          <button class="icon-btn" title="Settings">⚙️</button>
+        </div>
       </div>
 
       <!-- Messages -->
@@ -955,6 +994,13 @@
     let socket = null;
     let isLoginMode = true;
     let currentReactionMessageId = null;
+    
+    // Audio broadcasting state
+    let isBroadcasting = false;
+    let localStream = null;
+    let peerConnections = new Map();
+    let onlineUsers = new Set();
+    let currentBroadcaster = null;
 
     // DOM Elements
     const authModal = document.getElementById('authModal');
@@ -990,6 +1036,13 @@
     const pendingUsers = document.getElementById('pendingUsers');
     const recentMessages = document.getElementById('recentMessages');
     const closeAdminBtn = document.getElementById('closeAdminBtn');
+    
+    // Audio broadcasting elements
+    const broadcastBtn = document.getElementById('broadcastBtn');
+    const broadcastStatus = document.getElementById('broadcastStatus');
+    const stopBroadcastBtn = document.getElementById('stopBroadcastBtn');
+    const testAudioBtn = document.getElementById('testAudioBtn');
+    const onlineCount = document.getElementById('onlineCount');
 
     // Emojis
     const EMOJIS = ['😊','😎','🔥','💀','💖','😂','🥳','😭','👍','👀','😏','✨','🤝','💬','🎉','❤️','😍','🤔','😢','😡','🙄','😴','🤗','🤯','🥺','😈','👏','🙌','💯','🔥'];
@@ -1093,13 +1146,40 @@
       authError.classList.remove('hidden');
     }
 
+    // WebRTC configuration
+    const rtcConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    };
+
     // Socket functions
     function connectSocket() {
-      socket = io(SOCKET_URL, { transports: ['websocket'] });
+      console.log('Connecting to Socket.IO server...');
+      
+      socket = io(SOCKET_URL, { 
+        transports: ['websocket', 'polling'],
+        timeout: 20000,
+        forceNew: true
+      });
       
       socket.on('connect', () => {
-        console.log('Connected to server');
+        console.log('Connected to server with ID:', socket.id);
         socket.emit('join', { username: user?.username || 'anon' });
+        socket.emit('audio:join', { 
+          user_id: user?.id, 
+          username: user?.username || 'Anonymous' 
+        });
+      });
+      
+      socket.on('disconnect', (reason) => {
+        console.log('Disconnected from server:', reason);
+      });
+      
+      socket.on('connect_error', (error) => {
+        console.error('Connection error:', error);
+        addSystemMessage('❌ Connection error. Please refresh the page.');
       });
       
       socket.on('system', data => addSystemMessage(data.msg));
@@ -1107,7 +1187,390 @@
       socket.on('message:delete', ({ id }) => markMessageDeleted(id));
       socket.on('reaction:new', data => addReaction(data.message_id, data.emoji, data.user_id));
       socket.on('reaction:remove', data => removeReaction(data.message_id, data.emoji, data.user_id));
+      
+      // Audio broadcasting events
+      socket.on('audio:user_joined', handleUserJoined);
+      socket.on('audio:user_left', handleUserLeft);
+      socket.on('audio:broadcast_started', handleBroadcastStarted);
+      socket.on('audio:broadcast_stopped', handleBroadcastStopped);
+      socket.on('audio:offer', handleAudioOffer);
+      socket.on('audio:answer', handleAudioAnswer);
+      socket.on('audio:ice_candidate', handleIceCandidate);
+      
+      console.log('Socket.IO event listeners configured');
     }
+
+    // Audio broadcasting functions
+    async function startBroadcasting() {
+      try {
+        console.log('Starting broadcast...');
+        
+        // Request microphone permission
+        localStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }, 
+          video: false 
+        });
+        
+        console.log('Microphone access granted, stream:', localStream);
+        
+        isBroadcasting = true;
+        currentBroadcaster = user.id;
+        
+        // Update UI
+        broadcastBtn.classList.add('broadcasting');
+        broadcastBtn.setAttribute('data-broadcasting', 'true');
+        broadcastBtn.title = 'Stop Broadcasting';
+        broadcastStatus.classList.remove('hidden');
+        
+        // Notify server
+        socket.emit('audio:start_broadcast', {
+          user_id: user.id,
+          username: user.username
+        });
+        
+        console.log('Broadcast started, creating peer connections for users:', Array.from(onlineUsers));
+        
+        // Create peer connections for existing users
+        onlineUsers.forEach(userId => {
+          if (userId !== user.id) {
+            createPeerConnection(userId);
+          }
+        });
+        
+        addSystemMessage(`🎤 ${user.username} started broadcasting`);
+        
+      } catch (error) {
+        console.error('Failed to start broadcasting:', error);
+        if (error.name === 'NotAllowedError') {
+          addSystemMessage('❌ Microphone access denied. Please allow microphone access to broadcast.');
+        } else {
+          addSystemMessage('❌ Failed to start broadcasting. Please check your microphone.');
+        }
+      }
+    }
+
+    async function stopBroadcasting() {
+      if (!isBroadcasting) return;
+      
+      try {
+        // Stop local stream
+        if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+          localStream = null;
+        }
+        
+        // Close all peer connections
+        peerConnections.forEach((pc, userId) => {
+          pc.close();
+        });
+        peerConnections.clear();
+        
+        isBroadcasting = false;
+        currentBroadcaster = null;
+        
+        // Update UI
+        broadcastBtn.classList.remove('broadcasting');
+        broadcastBtn.setAttribute('data-broadcasting', 'false');
+        broadcastBtn.title = 'Start Broadcasting';
+        broadcastStatus.classList.add('hidden');
+        
+        // Notify server
+        socket.emit('audio:stop_broadcast', {
+          user_id: user.id,
+          username: user.username
+        });
+        
+        addSystemMessage(`🔇 ${user.username} stopped broadcasting`);
+        
+      } catch (error) {
+        console.error('Failed to stop broadcasting:', error);
+      }
+    }
+
+    function createPeerConnection(userId) {
+      console.log(`Creating peer connection for user ${userId}`);
+      
+      const pc = new RTCPeerConnection(rtcConfig);
+      peerConnections.set(userId, pc);
+      
+      // Add local stream tracks
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          console.log(`Adding track to peer connection:`, track);
+          console.log('Track kind:', track.kind);
+          console.log('Track enabled:', track.enabled);
+          console.log('Track muted:', track.muted);
+          
+          // Ensure track is enabled and not muted
+          track.enabled = true;
+          
+          const sender = pc.addTrack(track, localStream);
+          console.log('Track sender created:', sender);
+        });
+      }
+      
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log(`Sending ICE candidate to user ${userId}:`, event.candidate);
+          socket.emit('audio:ice_candidate', {
+            candidate: event.candidate,
+            from_id: user.id,
+            to_id: userId
+          });
+        }
+      };
+      
+      // Handle connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log(`Peer connection state for user ${userId}:`, pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          console.log(`✅ Peer connection established with user ${userId}`);
+        }
+      };
+      
+      // Handle ICE connection state changes
+      pc.oniceconnectionstatechange = () => {
+        console.log(`ICE connection state for user ${userId}:`, pc.iceConnectionState);
+      };
+      
+      // Create and send offer
+      pc.createOffer()
+        .then(offer => {
+          console.log(`Created offer for user ${userId}:`, offer);
+          console.log('Offer SDP:', offer.sdp);
+          return pc.setLocalDescription(offer);
+        })
+        .then(() => {
+          console.log(`Sending offer to user ${userId}`);
+          socket.emit('audio:offer', {
+            offer: pc.localDescription,
+            broadcaster_id: user.id,
+            username: user.username
+          });
+        })
+        .catch(error => {
+          console.error(`Failed to create offer for user ${userId}:`, error);
+        });
+      
+      return pc;
+    }
+
+    function handleUserJoined(data) {
+      onlineUsers.add(data.user_id);
+      updateOnlineCount();
+      
+      if (isBroadcasting && data.user_id !== user.id) {
+        createPeerConnection(data.user_id);
+      }
+    }
+
+    function handleUserLeft(data) {
+      onlineUsers.delete(data.user_id);
+      updateOnlineCount();
+      
+      // Close peer connection if exists
+      const pc = peerConnections.get(data.user_id);
+      if (pc) {
+        pc.close();
+        peerConnections.delete(data.user_id);
+      }
+    }
+
+    function handleBroadcastStarted(data) {
+      if (data.broadcaster_id === user.id) return; // Don't handle our own broadcast
+      
+      console.log(`Broadcast started by ${data.username} (ID: ${data.broadcaster_id})`);
+      currentBroadcaster = data.broadcaster_id;
+      addSystemMessage(`🎤 ${data.username} started broadcasting`);
+      
+      // Create peer connection to listen to broadcaster
+      const pc = new RTCPeerConnection(rtcConfig);
+      peerConnections.set(data.broadcaster_id, pc);
+      
+      // Handle incoming audio
+      pc.ontrack = (event) => {
+        console.log(`Received audio track from ${data.username}:`, event.streams[0]);
+        console.log('Track details:', event.track);
+        console.log('Stream details:', event.streams[0]);
+        
+        // Create audio element and ensure it plays
+        const audio = new Audio();
+        audio.srcObject = event.streams[0];
+        audio.volume = 1.0;
+        audio.autoplay = true;
+        audio.controls = true; // Add controls for debugging
+        
+        // Store audio element for later reference
+        audio.id = `audio-${data.broadcaster_id}`;
+        document.body.appendChild(audio);
+        
+        // Ensure audio plays
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log(`✅ Audio playing from ${data.username}`);
+              addSystemMessage(`🎧 Now listening to ${data.username}`);
+            })
+            .catch(error => {
+              console.error(`❌ Failed to play audio from ${data.username}:`, error);
+              addSystemMessage(`❌ Audio playback failed: ${error.message}`);
+            });
+        }
+      };
+      
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log(`Sending ICE candidate to broadcaster ${data.broadcaster_id}`);
+          socket.emit('audio:ice_candidate', {
+            candidate: event.candidate,
+            from_id: user.id,
+            to_id: data.broadcaster_id
+          });
+        }
+      };
+      
+      // Handle connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log(`Peer connection state with broadcaster ${data.username}:`, pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          addSystemMessage(`🔗 Connected to ${data.username}'s audio stream`);
+        } else if (pc.connectionState === 'failed') {
+          addSystemMessage(`❌ Failed to connect to ${data.username}'s audio stream`);
+        }
+      };
+      
+      // Handle ICE connection state changes
+      pc.oniceconnectionstatechange = () => {
+        console.log(`ICE connection state with ${data.username}:`, pc.iceConnectionState);
+      };
+    }
+
+    function handleBroadcastStopped(data) {
+      if (data.broadcaster_id === user.id) return; // Don't handle our own broadcast
+      
+      currentBroadcaster = null;
+      addSystemMessage(`🔇 ${data.username} stopped broadcasting`);
+      
+      // Close peer connection
+      const pc = peerConnections.get(data.broadcaster_id);
+      if (pc) {
+        pc.close();
+        peerConnections.delete(data.broadcaster_id);
+      }
+    }
+
+    function handleAudioOffer(data) {
+      if (data.broadcaster_id === user.id) return; // Don't handle our own offer
+      
+      console.log(`Received audio offer from ${data.username} (ID: ${data.broadcaster_id})`);
+      console.log('Offer data:', data.offer);
+      
+      const pc = peerConnections.get(data.broadcaster_id);
+      if (!pc) {
+        console.error(`No peer connection found for broadcaster ${data.broadcaster_id}`);
+        return;
+      }
+      
+      console.log('Setting remote description...');
+      pc.setRemoteDescription(new RTCSessionDescription(data.offer))
+        .then(() => {
+          console.log('Remote description set, creating answer...');
+          return pc.createAnswer();
+        })
+        .then(answer => {
+          console.log('Answer created:', answer);
+          console.log('Answer SDP:', answer.sdp);
+          return pc.setLocalDescription(answer);
+        })
+        .then(() => {
+          console.log('Local description set, sending answer...');
+          socket.emit('audio:answer', {
+            answer: pc.localDescription,
+            listener_id: user.id,
+            broadcaster_id: data.broadcaster_id
+          });
+          console.log('Answer sent successfully');
+        })
+        .catch(error => {
+          console.error('Failed to handle offer:', error);
+          addSystemMessage(`❌ Failed to establish audio connection: ${error.message}`);
+        });
+    }
+
+    function handleAudioAnswer(data) {
+      if (data.listener_id === user.id) return; // Don't handle our own answer
+      
+      const pc = peerConnections.get(data.listener_id);
+      if (!pc) return;
+      
+      pc.setRemoteDescription(new RTCSessionDescription(data.answer))
+        .catch(error => {
+          console.error('Failed to handle answer:', error);
+        });
+    }
+
+    function handleIceCandidate(data) {
+      if (data.from_id === user.id) return; // Don't handle our own candidates
+      
+      const pc = peerConnections.get(data.from_id);
+      if (!pc) return;
+      
+      pc.addIceCandidate(new RTCIceCandidate(data.candidate))
+        .catch(error => {
+          console.error('Failed to add ICE candidate:', error);
+        });
+    }
+
+    function updateOnlineCount() {
+      onlineCount.textContent = `${onlineUsers.size} online`;
+    }
+    
+    // Debug function to check audio state
+    function debugAudioState() {
+      console.log('=== AUDIO DEBUG INFO ===');
+      console.log('Is broadcasting:', isBroadcasting);
+      console.log('Local stream:', localStream);
+      console.log('Current broadcaster:', currentBroadcaster);
+      console.log('Peer connections:', peerConnections.size);
+      console.log('Online users:', Array.from(onlineUsers));
+      
+      if (localStream) {
+        console.log('Local stream tracks:', localStream.getTracks());
+        localStream.getTracks().forEach((track, index) => {
+          console.log(`Track ${index}:`, {
+            kind: track.kind,
+            enabled: track.enabled,
+            muted: track.muted,
+            readyState: track.readyState
+          });
+        });
+      }
+      
+      peerConnections.forEach((pc, userId) => {
+        console.log(`Peer connection ${userId}:`, {
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          signalingState: pc.signalingState
+        });
+      });
+      
+      console.log('=== END DEBUG INFO ===');
+    }
+    
+    // Add debug button to chat actions
+    const debugBtn = document.createElement('button');
+    debugBtn.className = 'icon-btn';
+    debugBtn.innerHTML = '🐛';
+    debugBtn.title = 'Debug Audio State';
+    debugBtn.onclick = debugAudioState;
+    document.querySelector('.chat-actions').appendChild(debugBtn);
 
     // Message functions
     function createMessageElement(message) {
@@ -1546,6 +2009,65 @@
 
     sendBtn.addEventListener('click', sendMessage);
 
+    // Broadcast button event listeners
+    broadcastBtn.addEventListener('click', () => {
+      if (isBroadcasting) {
+        stopBroadcasting();
+      } else {
+        startBroadcasting();
+      }
+    });
+
+    stopBroadcastBtn.addEventListener('click', stopBroadcasting);
+    
+    // Test audio button
+    testAudioBtn.addEventListener('click', async () => {
+      try {
+        console.log('Testing audio...');
+        const testStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }, 
+          video: false 
+        });
+        
+        console.log('Test stream obtained:', testStream);
+        console.log('Audio tracks:', testStream.getAudioTracks());
+        
+        const audio = new Audio();
+        audio.srcObject = testStream;
+        audio.volume = 0.5; // Lower volume for test
+        audio.controls = true; // Add controls for debugging
+        
+        // Add to DOM for debugging
+        audio.id = 'test-audio';
+        document.body.appendChild(audio);
+        
+        audio.play().then(() => {
+          console.log('✅ Audio test successful - microphone is working');
+          addSystemMessage('✅ Audio test successful - microphone is working');
+          
+          // Stop the test stream after 5 seconds
+          setTimeout(() => {
+            testStream.getTracks().forEach(track => track.stop());
+            if (audio.parentNode) {
+              audio.parentNode.removeChild(audio);
+            }
+            addSystemMessage('🔇 Audio test completed');
+          }, 5000);
+        }).catch(error => {
+          console.error('❌ Audio test failed:', error);
+          addSystemMessage('❌ Audio test failed - check browser console');
+        });
+        
+      } catch (error) {
+        console.error('Failed to test audio:', error);
+        addSystemMessage('❌ Audio test failed - microphone access denied');
+      }
+    });
+
     emojiBtn.addEventListener('click', () => {
       emojiPicker.classList.toggle('show');
     });
@@ -1620,6 +2142,10 @@
         if (user.role === 'admin') {
           adminBtn.classList.remove('hidden');
         }
+        
+        // Add current user to online users
+        onlineUsers.add(user.id);
+        updateOnlineCount();
         
         showAuthModal(false);
         connectSocket();
