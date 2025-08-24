@@ -936,7 +936,6 @@
                 // Create audio element
                 const audio = document.createElement('audio');
                 audio.srcObject = stream;
-                audio.autoplay = true;
                 audio.controls = false;
                 audio.volume = 0.8;
                 audio.id = `audio-${userId}`;
@@ -960,14 +959,32 @@
                 audioPlayers.appendChild(playerDiv);
                 audioPlayers.appendChild(audio);
                 
-                // Play audio (this should work now because user has interacted)
-                audio.play().then(() => {
-                    console.log('✅ Audio playback started for:', username);
-                    addSystemMessage(`🎧 Now listening to ${username}`);
-                }).catch(error => {
-                    console.error('Audio playback failed:', error);
-                    addSystemMessage('Audio playback failed. Please enable audio first.');
-                });
+                // Try to play audio, but handle autoplay restrictions
+                const playPromise = audio.play();
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log('✅ Audio playback started for:', username);
+                        addSystemMessage(`🎧 Now listening to ${username}`);
+                    }).catch(error => {
+                        console.error('Audio playback failed:', error);
+                        // Create a play button for user interaction
+                        const playButton = document.createElement('button');
+                        playButton.textContent = `▶️ Play ${username}`;
+                        playButton.className = 'btn btn-success';
+                        playButton.style.margin = '10px';
+                        playButton.onclick = () => {
+                            audio.play().then(() => {
+                                console.log('✅ Audio playback started after user interaction');
+                                playButton.remove();
+                                addSystemMessage(`🎧 Now listening to ${username}`);
+                            }).catch(err => {
+                                console.error('Still failed to play:', err);
+                            });
+                        };
+                        document.body.appendChild(playButton);
+                        addSystemMessage(`Click "Play ${username}" button to hear audio`);
+                    });
+                }
                 
             } catch (error) {
                 console.error('Failed to play audio stream:', error);
